@@ -4,121 +4,121 @@ import re
 from typing import Dict, List
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
 
 from .selectors import LANGUAGE_NAME_SELECTOR, PERCENT_RE, RESERVED_NAMESPACES
 
 GITHUB_BASE_URL = "https://github.com"
 
 
-def _extract_github_links(soup: BeautifulSoup) -> List[str]:
-    """Return absolute https://github.com/... links from all <a href> in the soup."""
-    links: List[str] = []
-    
-    for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
-        if href.startswith("//"):
-            continue
+def _soup(html: str) -> BeautifulSoup:
+    """Create a BeautifulSoup using fast parser if available (lxml -> html.parser fallback)."""
+    try:
+        return BeautifulSoup(html, "lxml")
+    except (FeatureNotFound, Exception):
+        return BeautifulSoup(html, "html.parser")
 
-        if href.startswith("/"):
-            absolute_url = urljoin(GITHUB_BASE_URL + "/", href)
-        else:
-            absolute_url = href
 
-        if absolute_url.startswith(GITHUB_BASE_URL + "/"):
-            clean_url = absolute_url.split("#", 1)[0].split("?", 1)[0]
-            links.append(clean_url)
-    
-    return links
+def _abs_github_url(href: str) -> str:
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    return urljoin(GITHUB_BASE_URL, href)
+
+
+def _is_repo_path(path: str) -> bool:
+    """True for '/owner/repo' path (no deeper segment)."""
+    if not path.startswith("/"):
+        return False
+    segs = [s for s in path.split("/") if s]
+    if len(segs) != 2:
+        return False
+    owner, repo = segs
+    if owner in RESERVED_NAMESPACES:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]+", owner)) and bool(re.fullmatch(r"[A-Za-z0-9_.-]+", repo))
 
 
 def extract_search_urls(html: str, search_type: str) -> List[str]:
-    """Extract normalized GitHub URLs for a given search type from the first page HTML."""
-    soup = BeautifulSoup(html, "html.parser")
-    seen_urls: set[str] = set()
-    result_urls: List[str] = []
+    """Extract result URLs from a GitHub search page for the given type.
 
-    def add_unique_url(url: str) -> None:
-        if url not in seen_urls:
-            seen_urls.add(url)
-            result_urls.append(url)
-
-    hrefs = _extract_github_links(soup)
+    - Repositories: '/{owner}/{repo}'
+    - Issues: '/{owner}/{repo}/issues/{number}'
+    - Wikis: '/{owner}/{repo}/wiki'
+    """
+    soup = _soup(html)
+    urls: List[str] = []
 
     if search_type == "Repositories":
-        for href in hrefs:
-            path = href.removeprefix(GITHUB_BASE_URL + "/")
-            parts = [part for part in path.split("/") if part]
-            
-            if (len(parts) == 2 and 
-                parts[0] not in RESERVED_NAMESPACES and 
-                parts[1] not in RESERVED_NAMESPACES):
-                add_unique_url(f"{GITHUB_BASE_URL}/{parts[0]}/{parts[1]}")
+        for a in soup.select("a.v-align-middle"):
+            href = a.get("href") or ""
+            if _is_repo_path(href):
+                urls.append(_abs_github_url(href))
+
+        if not urls:
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if _is_repo_path(href):
+                    urls.append(_abs_github_url(href))
 
     elif search_type == "Issues":
-        for href in hrefs:
-            path = href.removeprefix(GITHUB_BASE_URL + "/")
-            parts = [part for part in path.split("/") if part]
-            
-            if (len(parts) >= 4 and 
-                parts[2] == "issues" and 
-                parts[0] not in RESERVED_NAMESPACES):
-                add_unique_url(f"{GITHUB_BASE_URL}/{'/'.join(parts[:4])}")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if re.search(r"^/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+$", href):
+                urls.append(_abs_github_url(href))
 
     elif search_type == "Wikis":
-        for href in hrefs:
-            path = href.removeprefix(GITHUB_BASE_URL + "/")
-            parts = [part for part in path.split("/") if part]
-            
-            if (len(parts) >= 4 and 
-                parts[2] == "wiki" and 
-                parts[0] not in RESERVED_NAMESPACES):
-                add_unique_url(f"{GITHUB_BASE_URL}/{'/'.join(parts[:4])}")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if re.search(r"^/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/wiki$", href):
+                urls.append(_abs_github_url(href))
 
-    return result_urls
+    seen = set()
+    unique_urls: List[str] = []
+    for u in urls:
+        if u not in seen:
+            unique_urls.append(u)
+            seen.add(u)
+    return unique_urls
 
 
 def parse_language_stats(html: str) -> Dict[str, float]:
-    """Parse language usage from a repository page's language stats block.
-    Returns a dict of {language: percentage} normalized to sum to 100 (if possible).
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    stats: Dict[str, float] = {}
+    """Parse language stats from a GitHub repository page.
 
-    for list_item in soup.select("ul li"):
-        name_element = list_item.select_one(LANGUAGE_NAME_SELECTOR)
-        if not name_element:
+    Supports two forms:
+    1) The modern markup with LANGUAGE_NAME_SELECTOR for names + sibling span with percent.
+    2) Fallback to any list item containing a percent like '73.4%' and a plausible language name.
+    """
+    soup = _soup(html)
+    results: Dict[str, float] = {}
+
+    for li in soup.find_all("li"):
+        name_el = li.select_one(LANGUAGE_NAME_SELECTOR)
+        if not name_el:
             continue
 
-        percentage_text = None
-        for span in list_item.find_all("span"):
-            if span is name_element:
-                continue
-            text = span.get_text(strip=True)
-            if text.endswith("%"):
-                percentage_text = text[:-1]
+        percent_text = None
+        for span in li.find_all("span"):
+            txt = span.get_text(strip=True)
+            if re.fullmatch(PERCENT_RE, txt or ""):
+                percent_text = txt
                 break
 
-        if percentage_text is None:
-            match = re.search(PERCENT_RE, list_item.get_text(" ", strip=True))
-            if not match:
+        if percent_text is None:
+            m = re.search(PERCENT_RE, li.get_text(" ", strip=True))
+            if not m:
                 continue
-            percentage_text = match.group(1)
+            percent_text = m.group(1) + "%"
 
-        language_name = name_element.get_text(strip=True)
+        language_name = name_el.get_text(strip=True)
+        m2 = re.search(PERCENT_RE, percent_text)
+        if not m2:
+            continue
         try:
-            percentage = float(percentage_text)
+            value = float(m2.group(1))
         except ValueError:
             continue
 
-        if 0 <= percentage <= 100:
-            stats[language_name] = percentage
+        if language_name:
+            results[language_name] = value
 
-    total = sum(stats.values())
-    if total > 0:
-        normalized_stats = {}
-        for language, percentage in stats.items():
-            normalized_stats[language] = round(percentage * 100.0 / total, 1)
-        return normalized_stats
-
-    return stats
+    return results
