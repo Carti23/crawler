@@ -6,4 +6,4 @@ RESERVED_NAMESPACES = {
 
 LANGUAGE_NAME_SELECTOR = "span.color-fg-default.text-bold.mr-1"
 
-PERCENT_RE = r"([0-9]+(?:\.[0-9]+)?)\s*%"
+PERCENT_RE = r"([-+]?\d+(?:\.\d+)?)\s*%"

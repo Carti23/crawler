@@ -33,7 +33,9 @@ class CrawlerConfig:
 class GitHubCrawler:
     def __init__(self, config: CrawlerConfig):
         if config.type not in SUPPORTED_TYPES:
-            raise ValueError(f"Unsupported type: {config.type}")
+            raise ValueError(f"Unsupported search type: {config.type}")
+        if not config.keywords:
+            raise ValueError("At least one keyword is required")
         self.config = config
         self.session = self._build_session(config)
         self.proxies = config.proxies or []
@@ -41,6 +43,7 @@ class GitHubCrawler:
     def _build_session(self, cfg: CrawlerConfig) -> requests.Session:
         s = requests.Session()
         s.headers.update({"User-Agent": cfg.user_agent, "Accept-Language": "en-US,en;q=0.9"})
+        # Pool size ~ concurrency, with retries/backoff for transient GitHub responses
         pool = max(4, int(cfg.concurrency))
         adapter = HTTPAdapter(
             pool_connections=pool,
@@ -117,4 +120,3 @@ class GitHubCrawler:
             path = url.lstrip("/")
         owner, repo = path.split("/", 1)
         return owner, repo
-
