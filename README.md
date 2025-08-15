@@ -197,11 +197,11 @@ The project maintains **99% code coverage** with comprehensive test suites cover
 
 **Current Coverage Status:**
 - `ghcrawler/__init__.py`: 100%
-- `ghcrawler/cli.py`: 93%
-- `ghcrawler/crawler.py`: 100%
+- `ghcrawler/cli.py`: 94%
+- `ghcrawler/crawler.py`: 96%
 - `ghcrawler/parsers.py`: 99%
 - `ghcrawler/selectors.py`: 100%
-- **Overall**: 99%
+- **Overall**: 97%
 
 **Test Statistics:**
 - **26 test cases** covering all major functionality
